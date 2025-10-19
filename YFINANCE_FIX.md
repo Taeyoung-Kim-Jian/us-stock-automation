@@ -5,11 +5,12 @@ GitHub Actions 환경에서 Yahoo Finance API 요청 시 다음 에러 발생:
 ```
 Failed to get ticker 'AAPL' reason: Expecting value: line 1 column 1 (char 0)
 $AAPL: possibly delisted; No price data found (period=7d)
+HTTPSConnectionPool: Max retries exceeded (429 error responses)
 ```
 
 ## 🎯 원인
 1. **User-Agent 헤더 없음**: Yahoo Finance가 봇 트래픽을 차단
-2. **Rate Limiting**: 너무 빠른 요청 속도
+2. **Rate Limiting (429 에러)**: 너무 빠른 요청 속도로 IP 차단
 3. **재시도 전략 부족**: 일시적 오류 처리 미흡
 
 ## ✅ 해결 방법
@@ -23,22 +24,30 @@ session.headers.update({
 ```
 
 ### 2. 재시도 전략 구현
-HTTP 429, 500번대 에러 발생 시 자동 재시도:
+HTTP 500번대 에러 발생 시 자동 재시도 (429는 별도 처리):
 ```python
 retry_strategy = Retry(
-    total=5,
-    backoff_factor=2,
-    status_forcelist=[429, 500, 502, 503, 504],
+    total=3,
+    backoff_factor=5,
+    status_forcelist=[500, 502, 503, 504],
     allowed_methods=["GET"]
 )
 ```
 
-### 3. 요청 간격 조정
-- 각 종목마다 **1초** 대기
-- 50개마다 **5초** 추가 대기
-- 데이터 없을 시 **3, 6, 9, 12초** 지수 백오프
+### 3. 429 Rate Limit 특별 처리
+429 에러 발생 시 긴 대기 시간 적용:
+```python
+if "429" in error_msg:
+    wait_time = 30 + (attempt * 30)  # 30, 60, 90초 대기
+```
 
-### 4. 타임아웃 설정
+### 4. 요청 간격 조정
+- 각 종목마다 **2초** 대기
+- 10개마다 **10초** 추가 대기
+- 일반 에러 시 **10초** 대기
+- 데이터 없을 시 **5초** 대기
+
+### 5. 타임아웃 설정
 API 응답 대기 시간 30초로 제한:
 ```python
 hist = ticker.history(period="7d", timeout=30)
@@ -69,9 +78,11 @@ python test_yfinance.py
 
 ## ⏱️ 실행 시간
 - 기존: ~5분 (실패 시)
-- 개선 후: ~10-15분 (안정적 수집)
-  - 종목 수에 따라 다름
+- 개선 후: **~30-60분** (안정적 수집)
+  - 종목당 평균 12초 (2초 요청 + 10초 배치 대기)
+  - 100개 종목 기준: ~20분
   - 속도보다 안정성 우선
+  - Rate limit 회피가 최우선
 
 ## 📌 참고사항
 - Yahoo Finance API는 무료이지만 rate limit 존재

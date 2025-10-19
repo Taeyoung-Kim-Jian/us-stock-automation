@@ -52,9 +52,9 @@ def create_yfinance_session():
 
     # 재시도 전략 설정
     retry_strategy = Retry(
-        total=5,  # 총 5번 재시도
-        backoff_factor=2,  # 2초, 4초, 8초, 16초, 32초 대기
-        status_forcelist=[429, 500, 502, 503, 504],  # 재시도할 HTTP 상태 코드
+        total=3,  # 총 3번 재시도 (너무 많으면 시간 낭비)
+        backoff_factor=5,  # 5초, 10초, 15초 대기 (더 긴 대기)
+        status_forcelist=[500, 502, 503, 504],  # 429는 제외 (수동 처리)
         allowed_methods=["GET"]
     )
 
@@ -86,7 +86,7 @@ def get_stock_symbols():
     return symbols
 
 
-def get_latest_price(symbol, retries=5, session=None):
+def get_latest_price(symbol, retries=3, session=None):
     """yfinance로 최신 가격 조회 (재시도 로직 포함)"""
     for attempt in range(retries):
         try:
@@ -99,7 +99,7 @@ def get_latest_price(symbol, retries=5, session=None):
             if hist.empty:
                 # 데이터가 없으면 재시도
                 if attempt < retries - 1:
-                    time.sleep((attempt + 1) * 3)  # 3, 6, 9, 12초 대기
+                    time.sleep(5)  # 5초 대기
                     continue
                 raise ValueError(f"{symbol}: No data found after {retries} retries")
 
@@ -116,9 +116,21 @@ def get_latest_price(symbol, retries=5, session=None):
             }
 
         except Exception as e:
+            error_msg = str(e)
+
+            # 429 에러 (Rate Limit) 특별 처리
+            if "429" in error_msg or "too many" in error_msg.lower():
+                wait_time = 30 + (attempt * 30)  # 30, 60, 90초 대기
+                if attempt < retries - 1:
+                    print(f"  ⏳ {symbol}: Rate limit - {wait_time}초 대기 중...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"  ❌ {symbol}: Rate limit 초과")
+                    return None
+
             # 마지막 시도 실패 시 에러 메시지 출력
             if attempt == retries - 1:
-                error_msg = str(e)
                 # 에러 타입별로 다른 메시지 출력
                 if "No data found" in error_msg or "possibly delisted" in error_msg:
                     print(f"  ⚠️  {symbol}: 데이터 없음 (상장폐지 가능성)")
@@ -129,7 +141,7 @@ def get_latest_price(symbol, retries=5, session=None):
 
             # 재시도 전 대기
             if attempt < retries - 1:
-                wait_time = (attempt + 1) * 3  # 3, 6, 9, 12초
+                wait_time = 10  # 일반 에러는 10초 대기
                 time.sleep(wait_time)
 
     return None
@@ -187,9 +199,8 @@ def main():
     print("\n📊 가격 업데이트 중...")
 
     for idx, symbol in enumerate(symbols, 1):
-        # 10개마다 진행상황 출력
-        if idx % 10 == 0 or idx == 1:
-            print(f"  [{idx}/{total_symbols}] 처리 중...")
+        # 진행상황 출력
+        print(f"  [{idx}/{total_symbols}] {symbol} 처리 중...")
 
         # 가격 조회
         price_data = get_latest_price(symbol, session=YF_SESSION)
@@ -207,12 +218,12 @@ def main():
             fail_count += 1
 
         # API 속도 제한 고려 (충분한 대기 시간)
-        time.sleep(1.0)  # 1초 간격으로 요청 (API 차단 방지)
+        time.sleep(2.0)  # 2초 간격으로 요청 (API 차단 방지)
 
-        # 50개마다 상태 출력 및 추가 대기
-        if idx % 50 == 0:
-            print(f"  💾 {idx}개 종목 처리 완료 (잠시 대기...)")
-            time.sleep(5)  # 50개마다 5초 추가 대기
+        # 10개마다 추가 대기
+        if idx % 10 == 0:
+            print(f"  💾 {idx}개 종목 처리 완료 (10초 대기...)")
+            time.sleep(10)  # 10개마다 10초 추가 대기
 
     print("\n" + "=" * 60)
     print("✅ 가격 업데이트 완료!")
