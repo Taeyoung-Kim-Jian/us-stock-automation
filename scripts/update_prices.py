@@ -16,6 +16,10 @@ import logging
 # yfinance 로거의 레벨을 ERROR로 설정하여 불필요한 로그를 줄임
 logging.getLogger('yfinance').setLevel(logging.ERROR)
 
+# User-Agent 설정으로 봇 차단 우회
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 
 # 환경변수 로드
 load_dotenv()
@@ -36,8 +40,32 @@ HEADERS = {
     "Prefer": "return=minimal"
 }
 
-# requests.Session 객체 생성
-SESSION = requests.Session()
+# yfinance용 세션 설정 (User-Agent 추가, 재시도 로직)
+def create_yfinance_session():
+    """Yahoo Finance API 호출용 세션 생성"""
+    session = requests.Session()
+
+    # User-Agent 설정 (브라우저처럼 보이게)
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+
+    # 재시도 전략 설정
+    retry_strategy = Retry(
+        total=5,  # 총 5번 재시도
+        backoff_factor=2,  # 2초, 4초, 8초, 16초, 32초 대기
+        status_forcelist=[429, 500, 502, 503, 504],  # 재시도할 HTTP 상태 코드
+        allowed_methods=["GET"]
+    )
+
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    return session
+
+# yfinance 세션 객체 생성
+YF_SESSION = create_yfinance_session()
 
 
 def get_stock_symbols():
@@ -58,17 +86,22 @@ def get_stock_symbols():
     return symbols
 
 
-def get_latest_price(symbol, retries=3, session=None):
+def get_latest_price(symbol, retries=5, session=None):
     """yfinance로 최신 가격 조회 (재시도 로직 포함)"""
     for attempt in range(retries):
         try:
+            # 세션을 사용하여 ticker 생성
             ticker = yf.Ticker(symbol, session=session)
+
             # 최근 7일 데이터 조회 (주말/휴일 고려)
-            hist = ticker.history(period="7d")
+            hist = ticker.history(period="7d", timeout=30)
 
             if hist.empty:
                 # 데이터가 없으면 재시도
-                raise ValueError(f"{symbol}: No data found, retrying...")
+                if attempt < retries - 1:
+                    time.sleep((attempt + 1) * 3)  # 3, 6, 9, 12초 대기
+                    continue
+                raise ValueError(f"{symbol}: No data found after {retries} retries")
 
             # 가장 최근 데이터 (데이터가 있을 경우)
             latest = hist.iloc[-1]
@@ -85,13 +118,19 @@ def get_latest_price(symbol, retries=3, session=None):
         except Exception as e:
             # 마지막 시도 실패 시 에러 메시지 출력
             if attempt == retries - 1:
-                # hist.empty로 인한 재시도 실패와 다른 예외를 구분하여 출력
-                if isinstance(e, ValueError) and "No data found" in str(e):
-                    print(f"  ⚠️  {symbol}: 데이터 없음 (재시도 {retries}회 후)")
+                error_msg = str(e)
+                # 에러 타입별로 다른 메시지 출력
+                if "No data found" in error_msg or "possibly delisted" in error_msg:
+                    print(f"  ⚠️  {symbol}: 데이터 없음 (상장폐지 가능성)")
+                elif "JSONDecodeError" in str(type(e)) or "Expecting value" in error_msg:
+                    print(f"  ❌ {symbol}: API 응답 에러 (차단 가능성)")
                 else:
-                    print(f"  ❌ {symbol} 조회 실패 (재시도 {retries}회): {str(e)[:80]}")
+                    print(f"  ❌ {symbol}: {error_msg[:100]}")
+
+            # 재시도 전 대기
             if attempt < retries - 1:
-                time.sleep((attempt + 1) * 2)  # 2, 4초 대기
+                wait_time = (attempt + 1) * 3  # 3, 6, 9, 12초
+                time.sleep(wait_time)
 
     return None
 
@@ -153,7 +192,7 @@ def main():
             print(f"  [{idx}/{total_symbols}] 처리 중...")
 
         # 가격 조회
-        price_data = get_latest_price(symbol, session=SESSION)
+        price_data = get_latest_price(symbol, session=YF_SESSION)
 
         if price_data:
             try:
@@ -167,12 +206,13 @@ def main():
         else:
             fail_count += 1
 
-        # API 속도 제한 고려 (짧은 대기)
-        time.sleep(0.3) # 요청 간격을 0.3초로 약간 늘림
+        # API 속도 제한 고려 (충분한 대기 시간)
+        time.sleep(1.0)  # 1초 간격으로 요청 (API 차단 방지)
 
-        # 50개마다 상태 출력
+        # 50개마다 상태 출력 및 추가 대기
         if idx % 50 == 0:
-            print(f"  💾 {idx}개 종목 처리 완료")
+            print(f"  💾 {idx}개 종목 처리 완료 (잠시 대기...)")
+            time.sleep(5)  # 50개마다 5초 추가 대기
 
     print("\n" + "=" * 60)
     print("✅ 가격 업데이트 완료!")
