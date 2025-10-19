@@ -1,25 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-미국 주식 가격 업데이트 스크립트
+미국 주식 가격 업데이트 스크립트 (네이버 금융 기반)
 매일 최신 가격 정보를 Supabase DB에 저장
 """
 
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
-import yfinance as yf
+from bs4 import BeautifulSoup
 import time
-import logging
-
-# yfinance 로거의 레벨을 ERROR로 설정하여 불필요한 로그를 줄임
-logging.getLogger('yfinance').setLevel(logging.ERROR)
-
-# User-Agent 설정으로 봇 차단 우회
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
 
 # 환경변수 로드
 load_dotenv()
@@ -40,33 +31,6 @@ HEADERS = {
     "Prefer": "return=minimal"
 }
 
-# yfinance용 세션 설정 (User-Agent 추가, 재시도 로직)
-def create_yfinance_session():
-    """Yahoo Finance API 호출용 세션 생성"""
-    session = requests.Session()
-
-    # User-Agent 설정 (브라우저처럼 보이게)
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-
-    # 재시도 전략 설정
-    retry_strategy = Retry(
-        total=3,  # 총 3번 재시도 (너무 많으면 시간 낭비)
-        backoff_factor=5,  # 5초, 10초, 15초 대기 (더 긴 대기)
-        status_forcelist=[500, 502, 503, 504],  # 429는 제외 (수동 처리)
-        allowed_methods=["GET"]
-    )
-
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-
-    return session
-
-# yfinance 세션 객체 생성
-YF_SESSION = create_yfinance_session()
-
 
 def get_stock_symbols():
     """DB에서 미국 주식 종목 코드 목록 조회"""
@@ -86,65 +50,114 @@ def get_stock_symbols():
     return symbols
 
 
-def get_latest_price(symbol, retries=3, session=None):
-    """yfinance로 최신 가격 조회 (재시도 로직 포함)"""
-    for attempt in range(retries):
-        try:
-            # 세션을 사용하여 ticker 생성
-            ticker = yf.Ticker(symbol, session=session)
+def fetch_price_from_naver(symbol):
+    """
+    네이버 금융에서 미국 주식 시세 가져오기
+    URL 형식: https://finance.naver.com/worldstock/item/main.naver?symbol=AAPL
+    """
+    try:
+        # 네이버 금융 미국 주식 URL
+        url = f"https://finance.naver.com/worldstock/item/main.naver?symbol={symbol}"
 
-            # 최근 7일 데이터 조회 (주말/휴일 고려)
-            hist = ticker.history(period="7d", timeout=30)
+        response = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=15
+        )
+        response.raise_for_status()
 
-            if hist.empty:
-                # 데이터가 없으면 재시도
-                if attempt < retries - 1:
-                    time.sleep(5)  # 5초 대기
-                    continue
-                raise ValueError(f"{symbol}: No data found after {retries} retries")
+        soup = BeautifulSoup(response.text, "html.parser")
 
-            # 가장 최근 데이터 (데이터가 있을 경우)
-            latest = hist.iloc[-1]
+        # 현재가 정보 추출
+        price_area = soup.select_one("div.rate_info")
+        if not price_area:
+            return None
 
+        # 종가 (현재가)
+        close_elem = price_area.select_one("p.no_today em span.blind")
+        if not close_elem:
+            return None
+        close = float(close_elem.text.replace(",", ""))
+
+        # 일별 시세 테이블에서 오늘 데이터 찾기
+        table = soup.select_one("table.tbl_home")
+        if not table:
+            # 테이블이 없으면 현재가만으로 데이터 생성
             return {
-                'date': latest.name.strftime('%Y-%m-%d'),
-                'open': float(latest['Open']),
-                'high': float(latest['High']),
-                'low': float(latest['Low']),
-                'close': float(latest['Close']),
-                'volume': int(latest['Volume'])
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 0
             }
 
-        except Exception as e:
-            error_msg = str(e)
+        rows = table.select("tbody tr")
+        if not rows:
+            return {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 0
+            }
 
-            # 429 에러 (Rate Limit) 특별 처리
-            if "429" in error_msg or "too many" in error_msg.lower():
-                wait_time = 30 + (attempt * 30)  # 30, 60, 90초 대기
-                if attempt < retries - 1:
-                    print(f"  ⏳ {symbol}: Rate limit - {wait_time}초 대기 중...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    print(f"  ❌ {symbol}: Rate limit 초과")
-                    return None
+        # 첫 번째 행 (최신 거래일)
+        first_row = rows[0]
+        cols = first_row.select("td")
 
-            # 마지막 시도 실패 시 에러 메시지 출력
-            if attempt == retries - 1:
-                # 에러 타입별로 다른 메시지 출력
-                if "No data found" in error_msg or "possibly delisted" in error_msg:
-                    print(f"  ⚠️  {symbol}: 데이터 없음 (상장폐지 가능성)")
-                elif "JSONDecodeError" in str(type(e)) or "Expecting value" in error_msg:
-                    print(f"  ❌ {symbol}: API 응답 에러 (차단 가능성)")
-                else:
-                    print(f"  ❌ {symbol}: {error_msg[:100]}")
+        if len(cols) < 6:
+            return {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 0
+            }
 
-            # 재시도 전 대기
-            if attempt < retries - 1:
-                wait_time = 10  # 일반 에러는 10초 대기
-                time.sleep(wait_time)
+        # 날짜 파싱
+        date_text = cols[0].text.strip()
+        # "2025.01.17" 형식 → "2025-01-17"
+        trade_date = date_text.replace(".", "-")
 
-    return None
+        # 시가, 고가, 저가, 거래량
+        try:
+            open_price = float(cols[1].text.strip().replace(",", ""))
+        except:
+            open_price = close
+
+        try:
+            high_price = float(cols[2].text.strip().replace(",", ""))
+        except:
+            high_price = close
+
+        try:
+            low_price = float(cols[3].text.strip().replace(",", ""))
+        except:
+            low_price = close
+
+        try:
+            volume = int(cols[5].text.strip().replace(",", ""))
+        except:
+            volume = 0
+
+        return {
+            "date": trade_date,
+            "open": open_price,
+            "high": high_price,
+            "low": low_price,
+            "close": close,
+            "volume": volume
+        }
+
+    except requests.exceptions.RequestException as e:
+        print(f"  ❌ {symbol}: 네트워크 에러 - {str(e)[:80]}")
+        return None
+    except Exception as e:
+        print(f"  ❌ {symbol}: 파싱 에러 - {str(e)[:80]}")
+        return None
 
 
 def update_stock_price(symbol, price_data):
@@ -183,7 +196,7 @@ def update_stock_price(symbol, price_data):
 
 def main():
     print("=" * 60)
-    print("🇺🇸 미국 주식 가격 업데이트 시작")
+    print("🇺🇸 미국 주식 가격 업데이트 시작 (네이버 금융)")
     print(f"⏰ 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
@@ -196,19 +209,19 @@ def main():
     success_count = 0
     fail_count = 0
 
-    print("\n📊 가격 업데이트 중...")
+    print("\n📊 가격 업데이트 중...\n")
 
     for idx, symbol in enumerate(symbols, 1):
-        # 진행상황 출력
         print(f"  [{idx}/{total_symbols}] {symbol} 처리 중...")
 
         # 가격 조회
-        price_data = get_latest_price(symbol, session=YF_SESSION)
+        price_data = fetch_price_from_naver(symbol)
 
         if price_data:
             try:
                 # DB 업데이트
                 update_stock_price(symbol, price_data)
+                print(f"  ✅ {symbol}: {price_data['date']} ${price_data['close']:.2f}")
                 success_count += 1
             except Exception as e:
                 print(f"  ❌ {symbol} DB 저장 실패: {e}")
@@ -217,13 +230,12 @@ def main():
         else:
             fail_count += 1
 
-        # API 속도 제한 고려 (충분한 대기 시간)
-        time.sleep(2.0)  # 2초 간격으로 요청 (API 차단 방지)
+        # 네이버 서버 부하 방지 (짧은 대기)
+        time.sleep(0.5)
 
-        # 10개마다 추가 대기
+        # 10개마다 상태 출력
         if idx % 10 == 0:
-            print(f"  💾 {idx}개 종목 처리 완료 (10초 대기...)")
-            time.sleep(10)  # 10개마다 10초 추가 대기
+            print(f"  💾 {idx}개 종목 처리 완료\n")
 
     print("\n" + "=" * 60)
     print("✅ 가격 업데이트 완료!")
