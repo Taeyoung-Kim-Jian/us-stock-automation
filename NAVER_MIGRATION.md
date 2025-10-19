@@ -54,6 +54,9 @@ hist = ticker.history(period="7d", timeout=30)
 api_url = f"https://polling.finance.naver.com/api/realtime/worldstock/stock/{symbol}"
 response = requests.get(api_url)
 data = response.json()
+# 거래량 쉼표 제거 (중요!)
+volume_str = str(data["datas"][0].get("accumulatedTradingVolume", "0"))
+volume = int(volume_str.replace(",", ""))
 ```
 
 ### 3. 요청 간격

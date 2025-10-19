@@ -83,10 +83,13 @@ def fetch_price_from_naver(symbol):
         open_price = float(stock_data.get("openPrice", close))
         high_price = float(stock_data.get("highPrice", close))
         low_price = float(stock_data.get("lowPrice", close))
-        volume = int(stock_data.get("accumulatedTradingVolume", 0))
+
+        # 거래량 (쉼표 제거)
+        volume_str = str(stock_data.get("accumulatedTradingVolume", "0"))
+        volume = int(volume_str.replace(",", ""))
 
         # 거래일 (localTradedAt: "20250117" 형식)
-        date_str = stock_data.get("localTradedAt", "")
+        date_str = str(stock_data.get("localTradedAt", ""))
         if len(date_str) == 8:
             trade_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
         else:
