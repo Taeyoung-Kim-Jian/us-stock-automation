@@ -9,7 +9,6 @@ import os
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
-from bs4 import BeautifulSoup
 import time
 
 # 환경변수 로드
@@ -52,96 +51,46 @@ def get_stock_symbols():
 
 def fetch_price_from_naver(symbol):
     """
-    네이버 금융에서 미국 주식 시세 가져오기
-    URL 형식: https://finance.naver.com/worldstock/item/main.naver?symbol=AAPL
+    네이버 금융 API에서 미국 주식 시세 가져오기
+    API URL: https://polling.finance.naver.com/api/realtime/worldstock/stock/{symbol}
     """
     try:
-        # 네이버 금융 미국 주식 URL
-        url = f"https://finance.naver.com/worldstock/item/main.naver?symbol={symbol}"
+        # 네이버 금융 API (비공식)
+        api_url = f"https://polling.finance.naver.com/api/realtime/worldstock/stock/{symbol}"
 
         response = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            api_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://finance.naver.com/"
+            },
             timeout=15
         )
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        data = response.json()
 
-        # 현재가 정보 추출
-        price_area = soup.select_one("div.rate_info")
-        if not price_area:
+        # API 응답 확인
+        if not data or "datas" not in data:
             return None
 
-        # 종가 (현재가)
-        close_elem = price_area.select_one("p.no_today em span.blind")
-        if not close_elem:
+        stock_data = data["datas"][0] if data["datas"] else None
+        if not stock_data:
             return None
-        close = float(close_elem.text.replace(",", ""))
 
-        # 일별 시세 테이블에서 오늘 데이터 찾기
-        table = soup.select_one("table.tbl_home")
-        if not table:
-            # 테이블이 없으면 현재가만으로 데이터 생성
-            return {
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "open": close,
-                "high": close,
-                "low": close,
-                "close": close,
-                "volume": 0
-            }
+        # 필요한 데이터 추출
+        close = float(stock_data.get("closePrice", 0))
+        open_price = float(stock_data.get("openPrice", close))
+        high_price = float(stock_data.get("highPrice", close))
+        low_price = float(stock_data.get("lowPrice", close))
+        volume = int(stock_data.get("accumulatedTradingVolume", 0))
 
-        rows = table.select("tbody tr")
-        if not rows:
-            return {
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "open": close,
-                "high": close,
-                "low": close,
-                "close": close,
-                "volume": 0
-            }
-
-        # 첫 번째 행 (최신 거래일)
-        first_row = rows[0]
-        cols = first_row.select("td")
-
-        if len(cols) < 6:
-            return {
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "open": close,
-                "high": close,
-                "low": close,
-                "close": close,
-                "volume": 0
-            }
-
-        # 날짜 파싱
-        date_text = cols[0].text.strip()
-        # "2025.01.17" 형식 → "2025-01-17"
-        trade_date = date_text.replace(".", "-")
-
-        # 시가, 고가, 저가, 거래량
-        try:
-            open_price = float(cols[1].text.strip().replace(",", ""))
-        except:
-            open_price = close
-
-        try:
-            high_price = float(cols[2].text.strip().replace(",", ""))
-        except:
-            high_price = close
-
-        try:
-            low_price = float(cols[3].text.strip().replace(",", ""))
-        except:
-            low_price = close
-
-        try:
-            volume = int(cols[5].text.strip().replace(",", ""))
-        except:
-            volume = 0
+        # 거래일 (localTradedAt: "20250117" 형식)
+        date_str = stock_data.get("localTradedAt", "")
+        if len(date_str) == 8:
+            trade_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+        else:
+            trade_date = datetime.now().strftime("%Y-%m-%d")
 
         return {
             "date": trade_date,

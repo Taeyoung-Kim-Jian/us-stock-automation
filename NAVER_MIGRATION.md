@@ -17,11 +17,13 @@ Failed to get ticker: Expecting value: line 1 column 1 (char 0)
 3. **빠른 속도**: 실행 시간 5-10분 (기존 30-60분)
 4. **간단한 구조**: BeautifulSoup으로 쉽게 파싱
 
-### 네이버 금융 미국 주식 URL
+### 네이버 금융 API 엔드포인트
 ```
-https://finance.naver.com/worldstock/item/main.naver?symbol=AAPL
-https://finance.naver.com/worldstock/item/main.naver?symbol=MSFT
+https://polling.finance.naver.com/api/realtime/worldstock/stock/AAPL
+https://polling.finance.naver.com/api/realtime/worldstock/stock/MSFT
 ```
+- 비공식 API (네이버 금융 내부 API)
+- JSON 응답으로 파싱 간편
 
 ## 🔧 주요 변경사항
 
@@ -33,11 +35,12 @@ pandas==2.2.0
 numpy==1.26.3
 ```
 
-**After** (BeautifulSoup):
+**After** (최소 의존성):
 ```
-beautifulsoup4==4.12.3
-pytz==2024.1
+requests==2.31.0
+python-dotenv==1.0.0
 ```
+- BeautifulSoup도 불필요 (JSON API 사용)
 
 ### 2. 데이터 수집 방식
 **Before**: yfinance API 호출
@@ -46,11 +49,11 @@ ticker = yf.Ticker(symbol, session=session)
 hist = ticker.history(period="7d", timeout=30)
 ```
 
-**After**: 네이버 금융 HTML 스크래핑
+**After**: 네이버 금융 API 호출 (JSON)
 ```python
-url = f"https://finance.naver.com/worldstock/item/main.naver?symbol={symbol}"
-response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-soup = BeautifulSoup(response.text, "html.parser")
+api_url = f"https://polling.finance.naver.com/api/realtime/worldstock/stock/{symbol}"
+response = requests.get(api_url)
+data = response.json()
 ```
 
 ### 3. 요청 간격
