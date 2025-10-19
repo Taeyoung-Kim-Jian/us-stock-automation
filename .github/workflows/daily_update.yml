@@ -1,9 +1,9 @@
 name: 🇺🇸 Daily US Stock Update
 
 on:
-  # 매일 아침 7시 (KST) = 22시 (UTC 전날)
+  # 화~토 아침 7시 (KST) = 월~금 22시 (UTC)
   schedule:
-    - cron: '0 22 * * *'  # UTC 22:00 = KST 07:00 (다음날)
+    - cron: '0 22 * * 1-5'  # UTC 22:00, Mon-Fri = KST 07:00, Tue-Sat
 
   # 수동 실행 가능
   workflow_dispatch:

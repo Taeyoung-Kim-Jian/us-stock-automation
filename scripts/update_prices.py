@@ -11,6 +11,11 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import yfinance as yf
 import time
+import logging
+
+# yfinance 로거의 레벨을 ERROR로 설정하여 불필요한 로그를 줄임
+logging.getLogger('yfinance').setLevel(logging.ERROR)
+
 
 # 환경변수 로드
 load_dotenv()
@@ -31,6 +36,9 @@ HEADERS = {
     "Prefer": "return=minimal"
 }
 
+# requests.Session 객체 생성
+SESSION = requests.Session()
+
 
 def get_stock_symbols():
     """DB에서 미국 주식 종목 코드 목록 조회"""
@@ -50,32 +58,42 @@ def get_stock_symbols():
     return symbols
 
 
-def get_latest_price(symbol):
-    """yfinance로 최신 가격 조회"""
-    try:
-        ticker = yf.Ticker(symbol)
-        # 최근 2일 데이터 조회 (당일 + 전날)
-        hist = ticker.history(period="2d")
+def get_latest_price(symbol, retries=3, session=None):
+    """yfinance로 최신 가격 조회 (재시도 로직 포함)"""
+    for attempt in range(retries):
+        try:
+            ticker = yf.Ticker(symbol, session=session)
+            # 최근 7일 데이터 조회 (주말/휴일 고려)
+            hist = ticker.history(period="7d")
 
-        if hist.empty:
-            print(f"  ⚠️  {symbol}: 데이터 없음")
-            return None
+            if hist.empty:
+                # 데이터가 없으면 재시도
+                raise ValueError(f"{symbol}: No data found, retrying...")
 
-        # 가장 최근 데이터
-        latest = hist.iloc[-1]
+            # 가장 최근 데이터 (데이터가 있을 경우)
+            latest = hist.iloc[-1]
 
-        return {
-            'date': latest.name.strftime('%Y-%m-%d'),
-            'open': float(latest['Open']),
-            'high': float(latest['High']),
-            'low': float(latest['Low']),
-            'close': float(latest['Close']),
-            'volume': int(latest['Volume'])
-        }
+            return {
+                'date': latest.name.strftime('%Y-%m-%d'),
+                'open': float(latest['Open']),
+                'high': float(latest['High']),
+                'low': float(latest['Low']),
+                'close': float(latest['Close']),
+                'volume': int(latest['Volume'])
+            }
 
-    except Exception as e:
-        print(f"  ❌ {symbol} 조회 실패: {e}")
-        return None
+        except Exception as e:
+            # 마지막 시도 실패 시 에러 메시지 출력
+            if attempt == retries - 1:
+                # hist.empty로 인한 재시도 실패와 다른 예외를 구분하여 출력
+                if isinstance(e, ValueError) and "No data found" in str(e):
+                    print(f"  ⚠️  {symbol}: 데이터 없음 (재시도 {retries}회 후)")
+                else:
+                    print(f"  ❌ {symbol} 조회 실패 (재시도 {retries}회): {str(e)[:80]}")
+            if attempt < retries - 1:
+                time.sleep((attempt + 1) * 2)  # 2, 4초 대기
+
+    return None
 
 
 def update_stock_price(symbol, price_data):
@@ -135,7 +153,7 @@ def main():
             print(f"  [{idx}/{total_symbols}] 처리 중...")
 
         # 가격 조회
-        price_data = get_latest_price(symbol)
+        price_data = get_latest_price(symbol, session=SESSION)
 
         if price_data:
             try:
@@ -150,7 +168,7 @@ def main():
             fail_count += 1
 
         # API 속도 제한 고려 (짧은 대기)
-        time.sleep(0.2)
+        time.sleep(0.3) # 요청 간격을 0.3초로 약간 늘림
 
         # 50개마다 상태 출력
         if idx % 50 == 0:
