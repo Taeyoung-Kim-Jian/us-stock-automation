@@ -1,0 +1,47 @@
+name: 🇺🇸 Daily US Stock Update
+
+on:
+  # 매일 아침 7시 (KST) = 22시 (UTC 전날)
+  schedule:
+    - cron: '0 22 * * *'  # UTC 22:00 = KST 07:00 (다음날)
+
+  # 수동 실행 가능
+  workflow_dispatch:
+
+jobs:
+  update-and-analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 💰 Update US Stock Prices
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "🔄 미국 주식 가격 업데이트 시작..."
+          python scripts/update_prices.py
+
+      - name: 📊 Calculate Today's Pattern
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "📈 당일 패턴 계산 시작..."
+          python scripts/calculate_pattern.py
+
+      - name: ✅ Job Complete
+        run: |
+          echo "✨ 모든 작업이 완료되었습니다!"
+          echo "⏰ 완료 시간: $(TZ=Asia/Seoul date +'%Y-%m-%d %H:%M:%S KST')"
