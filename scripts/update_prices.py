@@ -9,6 +9,7 @@ import os
 import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 import time
 
 # 환경변수 로드
@@ -49,86 +50,58 @@ def get_stock_symbols():
     return symbols
 
 
-def fetch_price_history_from_naver(symbol):
+def fetch_price_from_naver(symbol):
     """
-    네이버 금융 API에서 미국 주식 최근 7일 시세 가져오기
+    네이버 금융에서 미국 주식 최근 거래일 시세 가져오기 (HTML 스크래핑)
     NASDAQ: 종목코드.O (예: AAPL.O)
-    NYSE: 종목코드.N (예: JPM.N)
+    NYSE: 종목코드 그대로 (예: JPM)
     """
-    # NASDAQ과 NYSE 모두 시도
-    suffixes = ['.O', '.N']
+    # NASDAQ (.O) 먼저 시도, 실패하면 NYSE (그대로) 시도
+    symbols_to_try = [f"{symbol}.O", symbol]
 
-    for suffix in suffixes:
+    for stock_code in symbols_to_try:
         try:
-            stock_code = f"{symbol}{suffix}"
-            # 차트 데이터 API (일별 시세)
-            api_url = f"https://api.stock.naver.com/chart/foreign/item/{stock_code}/day"
-            params = {
-                "startDateTime": (datetime.now() - timedelta(days=10)).strftime("%Y%m%d"),
-                "endDateTime": datetime.now().strftime("%Y%m%d")
-            }
+            url = f"https://finance.naver.com/world/sise.naver?symbol={stock_code}"
 
             response = requests.get(
-                api_url,
-                params=params,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Referer": "https://finance.naver.com/"
-                },
-                timeout=15
+                url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10
             )
-            response.raise_for_status()
 
-            data = response.json()
+            if response.status_code != 200:
+                continue
 
-            # API 응답 확인
-            if not data or len(data) == 0:
-                continue  # 다음 suffix 시도
+            soup = BeautifulSoup(response.text, "html.parser")
 
-            # 성공! 데이터 파싱
-            price_list = []
+            # 시세 테이블 찾기
+            table = soup.select_one("table.tbl_exchange")
+            if not table:
+                continue
 
-            for item in data:
-                try:
-                    # 날짜 파싱 (localDate: "20250117")
-                    date_str = str(item.get("localDate", ""))
-                    if len(date_str) == 8:
-                        trade_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-                    else:
-                        continue
+            rows = table.select("tr")
+            valid_rows = [r for r in rows if len(r.select("td")) >= 7 and r.select_one("td.date")]
 
-                    # 가격 데이터 (쉼표 제거)
-                    close_str = str(item.get("closePrice", "0"))
-                    close = float(close_str.replace(",", ""))
+            if not valid_rows:
+                continue
 
-                    if close == 0:
-                        continue
+            # 첫 번째 행 (최근 거래일)
+            cols = [c.text.strip().replace(",", "") for c in valid_rows[0].select("td")]
 
-                    open_str = str(item.get("openPrice", close_str))
-                    open_price = float(open_str.replace(",", ""))
+            if len(cols) < 7:
+                continue
 
-                    high_str = str(item.get("highPrice", close_str))
-                    high_price = float(high_str.replace(",", ""))
+            # 날짜 파싱 (YYYY.MM.DD → YYYY-MM-DD)
+            date_str = cols[0].replace(".", "-")
 
-                    low_str = str(item.get("lowPrice", close_str))
-                    low_price = float(low_str.replace(",", ""))
-
-                    volume_str = str(item.get("accumulatedTradingVolume", "0"))
-                    volume = int(volume_str.replace(",", ""))
-
-                    price_list.append({
-                        "date": trade_date,
-                        "open": open_price,
-                        "high": high_price,
-                        "low": low_price,
-                        "close": close,
-                        "volume": volume
-                    })
-                except:
-                    continue
-
-            if price_list:
-                return price_list
+            return {
+                "date": date_str,
+                "close": float(cols[1]) if cols[1] else 0,
+                "open": float(cols[3]) if cols[3] else 0,
+                "high": float(cols[4]) if cols[4] else 0,
+                "low": float(cols[5]) if cols[5] else 0,
+                "volume": int(float(cols[6])) if cols[6] else 0,
+            }
 
         except:
             continue
@@ -173,7 +146,7 @@ def update_stock_price(symbol, price_data):
 
 def main():
     print("=" * 60)
-    print("🇺🇸 미국 주식 가격 업데이트 시작 (네이버 금융)")
+    print("🇺🇸 미국 주식 가격 업데이트 시작 (네이버 금융 스크래핑)")
     print(f"⏰ 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
@@ -185,48 +158,39 @@ def main():
 
     success_count = 0
     fail_count = 0
-    total_price_records = 0
 
-    print("\n📊 가격 업데이트 중 (최근 7일치)...\n")
+    print("\n📊 가격 업데이트 중...\n")
 
     for idx, symbol in enumerate(symbols, 1):
-        print(f"  [{idx}/{total_symbols}] {symbol} 처리 중...")
+        # 가격 조회
+        price_data = fetch_price_from_naver(symbol)
 
-        # 7일치 가격 조회
-        price_list = fetch_price_history_from_naver(symbol)
-
-        if price_list:
+        if price_data:
             try:
-                # 모든 날짜의 데이터를 DB에 업데이트
-                for price_data in price_list:
-                    update_stock_price(symbol, price_data)
-                    total_price_records += 1
-
-                # 가장 최근 데이터 출력
-                latest = price_list[-1]
-                print(f"  ✅ {symbol}: {len(price_list)}일 업데이트 (최신: {latest['date']} ${latest['close']:.2f})")
+                # DB 업데이트
+                update_stock_price(symbol, price_data)
+                print(f"  [{idx}/{total_symbols}] ✅ {symbol}: {price_data['date']} ${price_data['close']:.2f}")
                 success_count += 1
             except Exception as e:
-                print(f"  ❌ {symbol} DB 저장 실패: {e}")
+                print(f"  [{idx}/{total_symbols}] ❌ {symbol}: DB 저장 실패 - {e}")
                 fail_count += 1
-                continue
         else:
-            print(f"  ⚠️  {symbol}: 데이터 없음")
+            print(f"  [{idx}/{total_symbols}] ⚠️  {symbol}: 데이터 없음")
             fail_count += 1
 
-        # 네이버 서버 부하 방지 (짧은 대기)
-        time.sleep(0.3)
+        # 네이버 서버 부하 방지
+        time.sleep(0.4)
 
-        # 50개마다 상태 출력
+        # 50개마다 진행상황
         if idx % 50 == 0:
-            print(f"  💾 {idx}개 종목 처리 완료 ({total_price_records}개 가격 레코드)\n")
+            print(f"\n  💾 {idx}/{total_symbols} 처리 완료 (성공: {success_count}, 실패: {fail_count})\n")
 
     print("\n" + "=" * 60)
     print("✅ 가격 업데이트 완료!")
-    print(f"성공: {success_count}개 종목")
-    print(f"실패: {fail_count}개 종목")
-    print(f"총 처리: {total_symbols}개 종목")
-    print(f"총 가격 레코드: {total_price_records}개")
+    print(f"성공: {success_count}개")
+    print(f"실패: {fail_count}개")
+    print(f"총 처리: {total_symbols}개")
+    print(f"성공률: {success_count/total_symbols*100:.1f}%")
     print("=" * 60)
 
 
