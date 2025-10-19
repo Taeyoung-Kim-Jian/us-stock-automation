@@ -31,8 +31,11 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_IS_REAL: ${{ secrets.KIS_IS_REAL }}
         run: |
-          echo "🔄 미국 주식 가격 업데이트 시작..."
+          echo "🔄 미국 주식 가격 업데이트 시작 (한국투자증권 API)..."
           python scripts/update_prices.py
 
       - name: 📊 Calculate Today's Pattern
