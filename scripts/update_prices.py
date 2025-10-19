@@ -78,11 +78,18 @@ def fetch_price_from_naver(symbol):
         if not stock_data:
             return None
 
-        # 필요한 데이터 추출
-        close = float(stock_data.get("closePrice", 0))
-        open_price = float(stock_data.get("openPrice", close))
-        high_price = float(stock_data.get("highPrice", close))
-        low_price = float(stock_data.get("lowPrice", close))
+        # 필요한 데이터 추출 (모든 숫자 필드에서 쉼표 제거)
+        close_str = str(stock_data.get("closePrice", "0"))
+        close = float(close_str.replace(",", ""))
+
+        open_str = str(stock_data.get("openPrice", close_str))
+        open_price = float(open_str.replace(",", ""))
+
+        high_str = str(stock_data.get("highPrice", close_str))
+        high_price = float(high_str.replace(",", ""))
+
+        low_str = str(stock_data.get("lowPrice", close_str))
+        low_price = float(low_str.replace(",", ""))
 
         # 거래량 (쉼표 제거)
         volume_str = str(stock_data.get("accumulatedTradingVolume", "0"))
