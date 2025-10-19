@@ -7,7 +7,7 @@
 
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import time
 
@@ -49,74 +49,92 @@ def get_stock_symbols():
     return symbols
 
 
-def fetch_price_from_naver(symbol):
+def fetch_price_history_from_naver(symbol):
     """
-    네이버 금융 API에서 미국 주식 시세 가져오기
-    API URL: https://polling.finance.naver.com/api/realtime/worldstock/stock/{symbol}
+    네이버 금융 API에서 미국 주식 최근 7일 시세 가져오기
+    NASDAQ: 종목코드.O (예: AAPL.O)
+    NYSE: 종목코드.N (예: JPM.N)
     """
-    try:
-        # 네이버 금융 API (비공식)
-        api_url = f"https://polling.finance.naver.com/api/realtime/worldstock/stock/{symbol}"
+    # NASDAQ과 NYSE 모두 시도
+    suffixes = ['.O', '.N']
 
-        response = requests.get(
-            api_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://finance.naver.com/"
-            },
-            timeout=15
-        )
-        response.raise_for_status()
+    for suffix in suffixes:
+        try:
+            stock_code = f"{symbol}{suffix}"
+            # 차트 데이터 API (일별 시세)
+            api_url = f"https://api.stock.naver.com/chart/foreign/item/{stock_code}/day"
+            params = {
+                "startDateTime": (datetime.now() - timedelta(days=10)).strftime("%Y%m%d"),
+                "endDateTime": datetime.now().strftime("%Y%m%d")
+            }
 
-        data = response.json()
+            response = requests.get(
+                api_url,
+                params=params,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://finance.naver.com/"
+                },
+                timeout=15
+            )
+            response.raise_for_status()
 
-        # API 응답 확인
-        if not data or "datas" not in data:
-            return None
+            data = response.json()
 
-        stock_data = data["datas"][0] if data["datas"] else None
-        if not stock_data:
-            return None
+            # API 응답 확인
+            if not data or len(data) == 0:
+                continue  # 다음 suffix 시도
 
-        # 필요한 데이터 추출 (모든 숫자 필드에서 쉼표 제거)
-        close_str = str(stock_data.get("closePrice", "0"))
-        close = float(close_str.replace(",", ""))
+            # 성공! 데이터 파싱
+            price_list = []
 
-        open_str = str(stock_data.get("openPrice", close_str))
-        open_price = float(open_str.replace(",", ""))
+            for item in data:
+                try:
+                    # 날짜 파싱 (localDate: "20250117")
+                    date_str = str(item.get("localDate", ""))
+                    if len(date_str) == 8:
+                        trade_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+                    else:
+                        continue
 
-        high_str = str(stock_data.get("highPrice", close_str))
-        high_price = float(high_str.replace(",", ""))
+                    # 가격 데이터 (쉼표 제거)
+                    close_str = str(item.get("closePrice", "0"))
+                    close = float(close_str.replace(",", ""))
 
-        low_str = str(stock_data.get("lowPrice", close_str))
-        low_price = float(low_str.replace(",", ""))
+                    if close == 0:
+                        continue
 
-        # 거래량 (쉼표 제거)
-        volume_str = str(stock_data.get("accumulatedTradingVolume", "0"))
-        volume = int(volume_str.replace(",", ""))
+                    open_str = str(item.get("openPrice", close_str))
+                    open_price = float(open_str.replace(",", ""))
 
-        # 거래일 (localTradedAt: "20250117" 형식)
-        date_str = str(stock_data.get("localTradedAt", ""))
-        if len(date_str) == 8:
-            trade_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-        else:
-            trade_date = datetime.now().strftime("%Y-%m-%d")
+                    high_str = str(item.get("highPrice", close_str))
+                    high_price = float(high_str.replace(",", ""))
 
-        return {
-            "date": trade_date,
-            "open": open_price,
-            "high": high_price,
-            "low": low_price,
-            "close": close,
-            "volume": volume
-        }
+                    low_str = str(item.get("lowPrice", close_str))
+                    low_price = float(low_str.replace(",", ""))
 
-    except requests.exceptions.RequestException as e:
-        print(f"  ❌ {symbol}: 네트워크 에러 - {str(e)[:80]}")
-        return None
-    except Exception as e:
-        print(f"  ❌ {symbol}: 파싱 에러 - {str(e)[:80]}")
-        return None
+                    volume_str = str(item.get("accumulatedTradingVolume", "0"))
+                    volume = int(volume_str.replace(",", ""))
+
+                    price_list.append({
+                        "date": trade_date,
+                        "open": open_price,
+                        "high": high_price,
+                        "low": low_price,
+                        "close": close,
+                        "volume": volume
+                    })
+                except:
+                    continue
+
+            if price_list:
+                return price_list
+
+        except:
+            continue
+
+    # 모든 시도 실패
+    return None
 
 
 def update_stock_price(symbol, price_data):
@@ -167,40 +185,48 @@ def main():
 
     success_count = 0
     fail_count = 0
+    total_price_records = 0
 
-    print("\n📊 가격 업데이트 중...\n")
+    print("\n📊 가격 업데이트 중 (최근 7일치)...\n")
 
     for idx, symbol in enumerate(symbols, 1):
         print(f"  [{idx}/{total_symbols}] {symbol} 처리 중...")
 
-        # 가격 조회
-        price_data = fetch_price_from_naver(symbol)
+        # 7일치 가격 조회
+        price_list = fetch_price_history_from_naver(symbol)
 
-        if price_data:
+        if price_list:
             try:
-                # DB 업데이트
-                update_stock_price(symbol, price_data)
-                print(f"  ✅ {symbol}: {price_data['date']} ${price_data['close']:.2f}")
+                # 모든 날짜의 데이터를 DB에 업데이트
+                for price_data in price_list:
+                    update_stock_price(symbol, price_data)
+                    total_price_records += 1
+
+                # 가장 최근 데이터 출력
+                latest = price_list[-1]
+                print(f"  ✅ {symbol}: {len(price_list)}일 업데이트 (최신: {latest['date']} ${latest['close']:.2f})")
                 success_count += 1
             except Exception as e:
                 print(f"  ❌ {symbol} DB 저장 실패: {e}")
                 fail_count += 1
                 continue
         else:
+            print(f"  ⚠️  {symbol}: 데이터 없음")
             fail_count += 1
 
         # 네이버 서버 부하 방지 (짧은 대기)
-        time.sleep(0.5)
+        time.sleep(0.3)
 
-        # 10개마다 상태 출력
-        if idx % 10 == 0:
-            print(f"  💾 {idx}개 종목 처리 완료\n")
+        # 50개마다 상태 출력
+        if idx % 50 == 0:
+            print(f"  💾 {idx}개 종목 처리 완료 ({total_price_records}개 가격 레코드)\n")
 
     print("\n" + "=" * 60)
     print("✅ 가격 업데이트 완료!")
-    print(f"성공: {success_count}개")
-    print(f"실패: {fail_count}개")
-    print(f"총 처리: {total_symbols}개")
+    print(f"성공: {success_count}개 종목")
+    print(f"실패: {fail_count}개 종목")
+    print(f"총 처리: {total_symbols}개 종목")
+    print(f"총 가격 레코드: {total_price_records}개")
     print("=" * 60)
 
 
