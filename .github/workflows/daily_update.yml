@@ -46,6 +46,14 @@ jobs:
           echo "📈 당일 패턴 계산 시작..."
           python scripts/calculate_pattern.py
 
+      - name: 🎯 Manage Active Stocks (투자점수 기반 활성/비활성)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          echo "🔄 투자점수 계산 및 활성 종목 관리 시작..."
+          python scripts/manage_us_stocks_rest.py
+
       - name: ✅ Job Complete
         run: |
           echo "✨ 모든 작업이 완료되었습니다!"
